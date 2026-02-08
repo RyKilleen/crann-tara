@@ -408,9 +408,9 @@ function renderPeers() {
 
     if (bounds.length > 0) {
       if (bounds.length === 1) {
-        map.setView(bounds[0], Math.max(map.getZoom(), 15));
+        map.setView(bounds[0], 19);
       } else {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
       }
     }
   }
