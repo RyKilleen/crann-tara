@@ -150,9 +150,9 @@ function onOrientation(e) {
   if (e.webkitCompassHeading != null) {
     currentHeading = e.webkitCompassHeading;
   } else if (e.absolute && e.alpha != null) {
-    currentHeading = (360 - e.alpha) % 360;
+    currentHeading = (450 - e.alpha) % 360;
   } else if (e.alpha != null) {
-    currentHeading = (360 - e.alpha) % 360;
+    currentHeading = (450 - e.alpha) % 360;
   }
   const now = Date.now();
   if (now - lastOrientationBroadcast >= ORIENTATION_THROTTLE_MS) {
