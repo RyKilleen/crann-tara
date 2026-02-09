@@ -4,6 +4,18 @@ const PEER_OPTS = IS_LOCAL
   ? { host: 'localhost', port: 9000, path: '/myapp' }
   : {}; // uses default PeerJS cloud server
 
+const CHANNEL_CODE_LENGTH = 6;
+const TOAST_DURATION_MS = 3500;
+const JUST_NOW_THRESHOLD_S = 5;
+const GEO_MAX_AGE_MS = 2000;
+const ORIENTATION_THROTTLE_MS = 500;
+const MAP_INITIAL_ZOOM = 2;
+const MAP_MAX_ZOOM = 19;
+const MAP_FIT_PADDING = [40, 40];
+const MARKER_SIZE = 24;
+const COORD_DECIMAL_PLACES = 5;
+const PEER_LIST_REFRESH_MS = 5000;
+
 /* ───── State ───── */
 const state = {
   name: '',
@@ -36,7 +48,7 @@ const toastEl = $('#toast');
 /* ───── Utilities ───── */
 const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/1/O/0
 
-function generateCode(len = 6) {
+function generateCode(len = CHANNEL_CODE_LENGTH) {
   let code = '';
   const arr = crypto.getRandomValues(new Uint8Array(len));
   for (const b of arr) code += CHARSET[b % CHARSET.length];
@@ -52,12 +64,12 @@ function showToast(msg, isError = false) {
   toastEl.textContent = msg;
   toastEl.className = 'toast visible' + (isError ? ' error' : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toastEl.className = 'toast'; }, 3500);
+  toastTimer = setTimeout(() => { toastEl.className = 'toast'; }, TOAST_DURATION_MS);
 }
 
 function timeAgo(ts) {
   const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (diff < 5) return 'just now';
+  if (diff < JUST_NOW_THRESHOLD_S) return 'just now';
   if (diff < 60) return `${diff}s ago`;
   return `${Math.floor(diff / 60)}m ago`;
 }
@@ -70,6 +82,14 @@ function showScreen(screen) {
 
 /* ───── Geolocation & Orientation ───── */
 let currentHeading = null;
+
+function onLocationChange() {
+  if (!state.myLocation) return;
+  state.myLocation.heading = currentHeading;
+  state.myLocation.timestamp = Date.now();
+  broadcastMyLocation();
+  renderPeers();
+}
 
 function startGeo() {
   // Initialize with a placeholder so the app works even without geo
@@ -91,23 +111,18 @@ function startGeo() {
   }
   state.geoWatchId = navigator.geolocation.watchPosition(
     (pos) => {
-      state.myLocation = {
-        peerId: state.peer?.id,
-        name: state.name,
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-        heading: currentHeading,
-        timestamp: Date.now(),
-      };
-      broadcastMyLocation();
-      renderPeers();
+      state.myLocation.peerId = state.peer?.id;
+      state.myLocation.name = state.name;
+      state.myLocation.lat = pos.coords.latitude;
+      state.myLocation.lng = pos.coords.longitude;
+      onLocationChange();
     },
     (err) => {
       console.warn('[geo] error:', err.code, err.message);
       // Still broadcast placeholder so peers see us
       broadcastMyLocation();
     },
-    { enableHighAccuracy: true, maximumAge: 2000 }
+    { enableHighAccuracy: true, maximumAge: GEO_MAX_AGE_MS }
   );
 }
 
@@ -129,6 +144,8 @@ function listenOrientation() {
   window.addEventListener('deviceorientation', onOrientation, true);
 }
 
+let lastOrientationBroadcast = 0;
+
 function onOrientation(e) {
   if (e.webkitCompassHeading != null) {
     currentHeading = e.webkitCompassHeading;
@@ -136,6 +153,11 @@ function onOrientation(e) {
     currentHeading = (360 - e.alpha) % 360;
   } else if (e.alpha != null) {
     currentHeading = (360 - e.alpha) % 360;
+  }
+  const now = Date.now();
+  if (now - lastOrientationBroadcast >= ORIENTATION_THROTTLE_MS) {
+    lastOrientationBroadcast = now;
+    onLocationChange();
   }
 }
 
@@ -210,7 +232,7 @@ function joinChannel() {
   const name = nameInput.value.trim();
   const code = codeInput.value.trim().toUpperCase();
   if (!name) { showToast('Please enter your name', true); return; }
-  if (code.length !== 6) { showToast('Enter a 6-character code', true); return; }
+  if (code.length !== CHANNEL_CODE_LENGTH) { showToast(`Enter a ${CHANNEL_CODE_LENGTH}-character code`, true); return; }
   state.name = name;
   state.code = code;
   state.isCreator = false;
@@ -334,10 +356,10 @@ function leaveChannel() {
 /* ───── Map ───── */
 function initMap() {
   if (map) return;
-  map = L.map('map').setView([0, 0], 2);
+  map = L.map('map').setView([0, 0], MAP_INITIAL_ZOOM);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
-    maxZoom: 19,
+    maxZoom: MAP_MAX_ZOOM,
   }).addTo(map);
 }
 
@@ -354,8 +376,8 @@ function createMarkerIcon(heading, isSelf) {
   return L.divIcon({
     className: '',
     html: `<div class="map-marker${isSelf ? ' self' : ''}" style="transform: rotate(${rotation}deg)">➤</div>`,
-    iconSize: [24, 24],
-    iconAnchor: [12, 12],
+    iconSize: [MARKER_SIZE, MARKER_SIZE],
+    iconAnchor: [MARKER_SIZE / 2, MARKER_SIZE / 2],
   });
 }
 
@@ -408,9 +430,9 @@ function renderPeers() {
 
     if (bounds.length > 0) {
       if (bounds.length === 1) {
-        map.setView(bounds[0], 19);
+        map.setView(bounds[0], MAP_MAX_ZOOM);
       } else {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 19 });
+        map.fitBounds(bounds, { padding: MAP_FIT_PADDING, maxZoom: MAP_MAX_ZOOM });
       }
     }
   }
@@ -431,7 +453,7 @@ function renderPeers() {
           <div class="peer-name">
             ${escapeHtml(loc.name)}${isSelf ? '<span class="you-badge">(you)</span>' : ''}
           </div>
-          <div class="peer-coords">${loc.lat === 0 && loc.lng === 0 ? 'awaiting location...' : `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`}</div>
+          <div class="peer-coords">${loc.lat === 0 && loc.lng === 0 ? 'awaiting location...' : `${loc.lat.toFixed(COORD_DECIMAL_PLACES)}, ${loc.lng.toFixed(COORD_DECIMAL_PLACES)}`}</div>
         </div>
         <div class="peer-meta">
           ${headingDeg != null ? `<div class="peer-heading">${headingDeg}°</div>` : ''}
@@ -467,4 +489,4 @@ codeInput.addEventListener('keydown', (e) => {
 });
 
 // Refresh time-ago every 5 seconds
-setInterval(renderPeers, 5000);
+setInterval(renderPeers, PEER_LIST_REFRESH_MS);
