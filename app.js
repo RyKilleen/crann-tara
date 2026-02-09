@@ -48,6 +48,7 @@ const state = {
   code: "",
   isCreator: false,
   peer: null,
+  greeterPeer: null,
   connections: new Map(),
   locations: new Map(),
   geoWatchId: null,
