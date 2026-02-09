@@ -1,56 +1,63 @@
-// Use local PeerJS server on localhost, cloud server otherwise
-const IS_LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-const PEER_OPTS = IS_LOCAL
-  ? { host: 'localhost', port: 9000, path: '/myapp' }
-  : {}; // uses default PeerJS cloud server
+import {
+  startGeo as _startGeo,
+  startCompass as _startCompass,
+  stopOrientation,
+} from "./geo.js";
+import {
+  createChannel as _createChannel,
+  joinChannel as _joinChannel,
+  broadcastMyLocation as _broadcastMyLocation,
+  leaveChannel as _leaveChannel,
+} from "./peer.js";
 
 const CHANNEL_CODE_LENGTH = 6;
 const TOAST_DURATION_MS = 3500;
 const JUST_NOW_THRESHOLD_S = 5;
-const GEO_MAX_AGE_MS = 2000;
-const ORIENTATION_THROTTLE_MS = 500;
 const MAP_INITIAL_ZOOM = 2;
-const MAP_MAX_ZOOM = 19;
+const MAP_MAX_ZOOM = 21;
 const MAP_FIT_PADDING = [40, 40];
 const MARKER_SIZE = 24;
+const MARKER_SCALE_ZOOM_THRESHOLD = 17;
+const MARKER_SCALE_FACTOR = 1.5;
 const COORD_DECIMAL_PLACES = 5;
-const PEER_LIST_REFRESH_MS = 5000;
-const HEADING_SMOOTHING = 0.25; // EMA weight for new readings (lower = smoother)
 
 /* ───── State ───── */
 const state = {
-  name: '',
-  code: '',
+  name: "",
+  code: "",
   isCreator: false,
   peer: null,
-  connections: new Map(),   // peerId -> DataConnection
-  locations: new Map(),     // peerId -> { peerId, name, lat, lng, heading, timestamp }
+  connections: new Map(),
+  locations: new Map(),
   geoWatchId: null,
   myLocation: null,
 };
 
 let map = null;
-const markers = new Map(); // peerId -> L.marker
+const markers = new Map();
+let userHasInteracted = false;
+let programmaticMove = false;
+let knownPeerIds = new Set();
 
 /* ───── DOM refs ───── */
 const $ = (sel) => document.querySelector(sel);
-const welcomeScreen = $('#welcome-screen');
-const channelScreen = $('#channel-screen');
-const nameInput = $('#name-input');
-const codeInput = $('#code-input');
-const createBtn = $('#create-btn');
-const joinBtn = $('#join-btn');
-const copyBtn = $('#copy-btn');
-const leaveBtn = $('#leave-btn');
-const channelCodeEl = $('#channel-code');
-const peerListEl = $('#peer-list');
-const toastEl = $('#toast');
+const welcomeScreen = $("#welcome-screen");
+const channelScreen = $("#channel-screen");
+const nameInput = $("#name-input");
+const codeInput = $("#code-input");
+const createBtn = $("#create-btn");
+const joinBtn = $("#join-btn");
+const copyBtn = $("#copy-btn");
+const leaveBtn = $("#leave-btn");
+const channelCodeEl = $("#channel-code");
+const peerListEl = $("#peer-list");
+const toastEl = $("#toast");
 
 /* ───── Utilities ───── */
-const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/1/O/0
+const CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 function generateCode(len = CHANNEL_CODE_LENGTH) {
-  let code = '';
+  let code = "";
   const arr = crypto.getRandomValues(new Uint8Array(len));
   for (const b of arr) code += CHARSET[b % CHARSET.length];
   return code;
@@ -63,333 +70,70 @@ function peerIdFor(code) {
 let toastTimer;
 function showToast(msg, isError = false) {
   toastEl.textContent = msg;
-  toastEl.className = 'toast visible' + (isError ? ' error' : '');
+  toastEl.className = "toast visible" + (isError ? " error" : "");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toastEl.className = 'toast'; }, TOAST_DURATION_MS);
+  toastTimer = setTimeout(() => {
+    toastEl.className = "toast";
+  }, TOAST_DURATION_MS);
 }
 
 function timeAgo(ts) {
   const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (diff < JUST_NOW_THRESHOLD_S) return 'just now';
+  if (diff < JUST_NOW_THRESHOLD_S) return "just now";
   if (diff < 60) return `${diff}s ago`;
   return `${Math.floor(diff / 60)}m ago`;
 }
 
 function showScreen(screen) {
-  welcomeScreen.classList.remove('active');
-  channelScreen.classList.remove('active');
-  screen.classList.add('active');
+  welcomeScreen.classList.remove("active");
+  channelScreen.classList.remove("active");
+  screen.classList.add("active");
 }
 
-const ARROW_SVG_PATH = 'M10 2 L16 16 L10 12 L4 16 Z';
+const ARROW_SVG_PATH = "M10 2 L16 16 L10 12 L4 16 Z";
 
-function arrowSvg(color) {
-  return `<svg width="20" height="20" viewBox="0 0 20 20"><path d="${ARROW_SVG_PATH}" fill="${color}" /></svg>`;
+function markerSizeForZoom(zoom) {
+  if (zoom <= MARKER_SCALE_ZOOM_THRESHOLD) return MARKER_SIZE;
+  const t = (zoom - MARKER_SCALE_ZOOM_THRESHOLD) / (MAP_MAX_ZOOM - MARKER_SCALE_ZOOM_THRESHOLD);
+  return MARKER_SIZE * (1 + t * (MARKER_SCALE_FACTOR - 1));
+}
+
+function arrowSvg(color, size = 20) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 20 20"><path d="${ARROW_SVG_PATH}" fill="${color}" /></svg>`;
 }
 
 function accentColor(isSelf) {
-  return isSelf ? 'var(--accent)' : 'var(--accent2)';
+  return isSelf ? "var(--accent)" : "var(--accent2)";
 }
 
-/* ───── Geolocation & Orientation ───── */
-let currentHeading = null;
-
-function onLocationChange() {
-  if (!state.myLocation) return;
-  state.myLocation.heading = currentHeading;
-  state.myLocation.timestamp = Date.now();
-  broadcastMyLocation();
-  renderPeers();
-}
-
-function startGeo() {
-  // Initialize with a placeholder so the app works even without geo
-  if (!state.myLocation) {
-    state.myLocation = {
-      peerId: state.peer?.id,
-      name: state.name,
-      lat: 0,
-      lng: 0,
-      heading: currentHeading,
-      timestamp: Date.now(),
-    };
-    renderPeers();
-  }
-
-  if (!navigator.geolocation) {
-    showToast('Geolocation not supported — using placeholder', true);
-    return;
-  }
-  state.geoWatchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      state.myLocation.peerId = state.peer?.id;
-      state.myLocation.name = state.name;
-      state.myLocation.lat = pos.coords.latitude;
-      state.myLocation.lng = pos.coords.longitude;
-      onLocationChange();
-    },
-    (err) => {
-      console.warn('[geo] error:', err.code, err.message);
-      // Still broadcast placeholder so peers see us
-      broadcastMyLocation();
-    },
-    { enableHighAccuracy: true, maximumAge: GEO_MAX_AGE_MS }
-  );
-}
-
-function startCompass() {
-  // iOS 13+
-  if (typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function') {
-    DeviceOrientationEvent.requestPermission()
-      .then((perm) => { if (perm === 'granted') listenOrientation(); })
-      .catch(() => {});
-  } else {
-    listenOrientation();
-  }
-}
-
-let orientationListening = false;
-
-function listenOrientation() {
-  // Prefer absolute orientation
-  window.addEventListener('deviceorientationabsolute', onOrientation, true);
-  window.addEventListener('deviceorientation', onOrientation, true);
-  orientationListening = true;
-}
-
-function stopOrientation() {
-  if (!orientationListening) return;
-  window.removeEventListener('deviceorientationabsolute', onOrientation, true);
-  window.removeEventListener('deviceorientation', onOrientation, true);
-  orientationListening = false;
-  currentHeading = null;
-}
-
-let lastOrientationBroadcast = 0;
-
-function smoothHeading(raw) {
-  if (currentHeading == null) return raw;
-  let diff = raw - currentHeading;
-  if (diff > 180) diff -= 360;
-  if (diff < -180) diff += 360;
-  return ((currentHeading + HEADING_SMOOTHING * diff) % 360 + 360) % 360;
-}
-
-function onOrientation(e) {
-  let raw = null;
-  if (e.webkitCompassHeading != null) {
-    raw = e.webkitCompassHeading;
-  } else if (e.alpha != null) {
-    raw = (360 - e.alpha) % 360;
-  }
-  if (raw != null) {
-    currentHeading = smoothHeading(raw);
-  }
-  const now = Date.now();
-  if (now - lastOrientationBroadcast >= ORIENTATION_THROTTLE_MS) {
-    lastOrientationBroadcast = now;
-    onLocationChange();
-  }
-}
-
-/* ───── PeerJS — Create Channel ───── */
-function createChannel() {
-  const name = nameInput.value.trim();
-  if (!name) { showToast('Please enter your name', true); return; }
-  state.name = name;
-  state.code = generateCode();
-  state.isCreator = true;
-
-  createBtn.disabled = joinBtn.disabled = true;
-
-  const peerId = peerIdFor(state.code);
-  console.log('[create] registering peer:', peerId, 'opts:', PEER_OPTS);
-  state.peer = new Peer(peerId, PEER_OPTS);
-
-  state.peer.on('open', (id) => {
-    console.log('[create] peer open with id:', id);
-    channelCodeEl.textContent = state.code;
-    showScreen(channelScreen);
-    initMap();
-    startGeo();
-    startCompass();
-    refreshInterval = setInterval(renderPeers, PEER_LIST_REFRESH_MS);
-    showToast('Channel created');
-  });
-
-  state.peer.on('connection', (conn) => {
-    console.log('[create] incoming connection from:', conn.peer);
-    conn.on('open', () => {
-      console.log('[create] connection open with:', conn.peer);
-      state.connections.set(conn.peer, conn);
-      // Send current peer states
-      conn.send({
-        type: 'peers',
-        locations: Array.from(state.locations.values()),
-      });
-      // Also send creator's own location
-      if (state.myLocation) {
-        conn.send({ ...state.myLocation, type: 'location' });
-      }
-    });
-
-    conn.on('data', (data) => handleData(data, conn));
-
-    conn.on('error', (err) => {
-      console.error('[create] connection error with', conn.peer, ':', err);
-    });
-
-    conn.on('close', () => {
-      console.log('[create] connection closed:', conn.peer);
-      state.connections.delete(conn.peer);
-      state.locations.delete(conn.peer);
-      broadcast({ type: 'peer-left', peerId: conn.peer });
-      renderPeers();
-    });
-  });
-
-  state.peer.on('disconnected', () => {
-    console.warn('[create] peer disconnected from signaling server');
-  });
-
-  state.peer.on('error', (err) => {
-    console.error('[create] peer error:', err.type, err);
-    showToast(`Peer error: ${err.type}`, true);
-    createBtn.disabled = joinBtn.disabled = false;
-  });
-}
-
-/* ───── PeerJS — Join Channel ───── */
-function joinChannel() {
-  const name = nameInput.value.trim();
-  const code = codeInput.value.trim().toUpperCase();
-  if (!name) { showToast('Please enter your name', true); return; }
-  if (code.length !== CHANNEL_CODE_LENGTH) { showToast(`Enter a ${CHANNEL_CODE_LENGTH}-character code`, true); return; }
-  state.name = name;
-  state.code = code;
-  state.isCreator = false;
-
-  createBtn.disabled = joinBtn.disabled = true;
-
-  const joinerId = 'way-j-' + generateCode();
-  state.peer = new Peer(joinerId, PEER_OPTS);
-
-  state.peer.on('open', (id) => {
-    console.log('[join] peer open with id:', id);
-    console.log('[join] connecting to:', peerIdFor(code));
-    const conn = state.peer.connect(peerIdFor(code), { reliable: true });
-
-    conn.on('open', () => {
-      console.log('[join] connection open to:', conn.peer);
-      state.connections.set(conn.peer, conn);
-      channelCodeEl.textContent = state.code;
-      showScreen(channelScreen);
-      initMap();
-      startGeo();
-      startCompass();
-      refreshInterval = setInterval(renderPeers, PEER_LIST_REFRESH_MS);
-      showToast('Joined channel');
-      // Send my location immediately if available
-      if (state.myLocation) {
-        conn.send({ ...state.myLocation, type: 'location' });
-      }
-    });
-
-    conn.on('data', (data) => handleData(data, conn));
-
-    conn.on('error', (err) => {
-      console.error('[join] connection error:', err);
-    });
-
-    conn.on('close', () => {
-      showToast('Host disconnected', true);
-      leaveChannel();
-    });
-  });
-
-  state.peer.on('disconnected', () => {
-    console.warn('[join] peer disconnected from signaling server');
-  });
-
-  state.peer.on('error', (err) => {
-    console.error('[join] peer error:', err.type, err);
-    if (err.type === 'peer-unavailable') {
-      showToast('Channel not found', true);
-    } else {
-      showToast(`Peer error: ${err.type}`, true);
-    }
-    createBtn.disabled = joinBtn.disabled = false;
-  });
-}
-
-/* ───── Message Handling ───── */
-function handleData(data, fromConn) {
-  console.log('[data] received from', fromConn.peer, ':', typeof data, data);
-  if (data.type === 'location') {
-    state.locations.set(data.peerId, data);
-    // Creator relays to all other peers
-    if (state.isCreator) {
-      for (const [pid, conn] of state.connections) {
-        if (pid !== fromConn.peer) {
-          conn.send(data);
-        }
-      }
-    }
-    renderPeers();
-  } else if (data.type === 'peers') {
-    for (const loc of data.locations) {
-      state.locations.set(loc.peerId, loc);
-    }
-    renderPeers();
-  } else if (data.type === 'peer-left') {
-    state.locations.delete(data.peerId);
-    renderPeers();
-  }
-}
-
-function broadcast(msg) {
-  for (const conn of state.connections.values()) {
-    conn.send(msg);
-  }
-}
-
-function broadcastMyLocation() {
-  if (!state.myLocation) return;
-  broadcast({ ...state.myLocation, type: 'location' });
-}
-
-/* ───── Leave / Cleanup ───── */
-let refreshInterval = null;
-
-function leaveChannel() {
-  if (state.geoWatchId != null) {
-    navigator.geolocation.clearWatch(state.geoWatchId);
-    state.geoWatchId = null;
-  }
-  stopOrientation();
-  clearInterval(refreshInterval);
-  refreshInterval = null;
-  if (state.peer) {
-    state.peer.destroy();
-    state.peer = null;
-  }
-  state.connections.clear();
-  state.locations.clear();
-  state.myLocation = null;
-  cleanupMap();
-  createBtn.disabled = joinBtn.disabled = false;
-  showScreen(welcomeScreen);
+function escapeHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = str;
+  return d.innerHTML;
 }
 
 /* ───── Map ───── */
 function initMap() {
   if (map) return;
-  map = L.map('map').setView([0, 0], MAP_INITIAL_ZOOM);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
-    maxZoom: MAP_MAX_ZOOM,
-  }).addTo(map);
+  map = L.map("map").setView([0, 0], MAP_INITIAL_ZOOM);
+  L.tileLayer(
+    "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+    {
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
+      maxZoom: MAP_MAX_ZOOM,
+    },
+  ).addTo(map);
+
+  map.on("zoomstart", () => {
+    if (!programmaticMove) userHasInteracted = true;
+  });
+  map.on("dragstart", () => {
+    userHasInteracted = true;
+  });
+  map.on("zoomend", () => {
+    renderPeers();
+  });
 }
 
 function cleanupMap() {
@@ -398,15 +142,17 @@ function cleanupMap() {
     map = null;
   }
   markers.clear();
+  userHasInteracted = false;
+  knownPeerIds = new Set();
 }
 
-function createMarkerIcon(heading, isSelf) {
+function createMarkerIcon(heading, isSelf, size = MARKER_SIZE) {
   const rotation = heading != null ? Math.round(heading) : 0;
   return L.divIcon({
-    className: '',
-    html: `<div class="map-marker" style="transform: rotate(${rotation}deg)">${arrowSvg(accentColor(isSelf))}</div>`,
-    iconSize: [MARKER_SIZE, MARKER_SIZE],
-    iconAnchor: [MARKER_SIZE / 2, MARKER_SIZE / 2],
+    className: "",
+    html: `<div class="map-marker" style="transform: rotate(${rotation}deg)">${arrowSvg(accentColor(isSelf), size)}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
   });
 }
 
@@ -416,7 +162,6 @@ function updateMapMarkers(locations) {
 
   const activePeerIds = new Set(locations.map((l) => l.peerId));
 
-  // Remove markers for peers that left
   for (const [pid, marker] of markers) {
     if (!activePeerIds.has(pid)) {
       map.removeLayer(marker);
@@ -427,11 +172,12 @@ function updateMapMarkers(locations) {
   const bounds = [];
 
   for (const loc of locations) {
-    if (loc.lat === 0 && loc.lng === 0) continue; // skip placeholder
+    if (loc.lat === 0 && loc.lng === 0) continue;
     const latlng = [loc.lat, loc.lng];
     bounds.push(latlng);
     const isSelf = loc.isSelf || false;
-    const icon = createMarkerIcon(loc.heading, isSelf);
+    const size = markerSizeForZoom(map.getZoom());
+    const icon = createMarkerIcon(loc.heading, isSelf, size);
 
     if (markers.has(loc.peerId)) {
       const m = markers.get(loc.peerId);
@@ -439,47 +185,61 @@ function updateMapMarkers(locations) {
       m.setIcon(icon);
     } else {
       const m = L.marker(latlng, { icon })
-        .bindTooltip(escapeHtml(loc.name) + (isSelf ? ' (you)' : ''), { permanent: false, direction: 'top' })
+        .bindTooltip(escapeHtml(loc.name) + (isSelf ? " (you)" : ""), {
+          permanent: false,
+          direction: "top",
+        })
         .addTo(map);
       markers.set(loc.peerId, m);
     }
   }
 
-  if (bounds.length > 0) {
+  const currentPeerIds = new Set(locations.map((l) => l.peerId));
+  const hasNewPeer = [...currentPeerIds].some((id) => !knownPeerIds.has(id));
+  knownPeerIds = currentPeerIds;
+
+  if (bounds.length > 0 && (!userHasInteracted || hasNewPeer)) {
+    programmaticMove = true;
     if (bounds.length === 1) {
       map.setView(bounds[0], MAP_MAX_ZOOM);
     } else {
-      map.fitBounds(bounds, { padding: MAP_FIT_PADDING, maxZoom: MAP_MAX_ZOOM });
+      map.fitBounds(bounds, {
+        padding: MAP_FIT_PADDING,
+        maxZoom: MAP_MAX_ZOOM,
+      });
     }
+    programmaticMove = false;
   }
 }
 
 function renderPeerCards(locations) {
-  peerListEl.innerHTML = locations.map((loc) => {
-    const headingDeg = loc.heading != null ? Math.round(loc.heading) : null;
-    const arrowRotation = headingDeg != null ? headingDeg : 0;
-    const isSelf = loc.isSelf || false;
+  peerListEl.innerHTML = locations
+    .map((loc) => {
+      const headingDeg = loc.heading != null ? Math.round(loc.heading) : null;
+      const arrowRotation = headingDeg != null ? headingDeg : 0;
+      const isSelf = loc.isSelf || false;
 
-    return `
-      <div class="peer-card${isSelf ? ' self' : ''}">
+      return `
+      <div class="peer-card${isSelf ? " self" : ""}">
         <div class="peer-compass">
           <span class="arrow" style="transform: rotate(${arrowRotation}deg)"
-                title="${headingDeg != null ? headingDeg + '°' : 'no heading'}">
+                title="${headingDeg != null ? headingDeg + "°" : "no heading"}">
             ${arrowSvg(accentColor(isSelf))}
           </span>
         </div>
         <div class="peer-info">
           <div class="peer-name">
-            ${escapeHtml(loc.name)}${isSelf ? '<span class="you-badge">(you)</span>' : ''}
+            ${escapeHtml(loc.name)}${isSelf ? '<span class="you-badge">(you)</span>' : ""}
           </div>
-          <div class="peer-coords">${loc.lat === 0 && loc.lng === 0 ? 'awaiting location...' : `${loc.lat.toFixed(COORD_DECIMAL_PLACES)}, ${loc.lng.toFixed(COORD_DECIMAL_PLACES)}`}</div>
+          <div class="peer-coords">${loc.lat === 0 && loc.lng === 0 ? "awaiting location..." : `${loc.lat.toFixed(COORD_DECIMAL_PLACES)}, ${loc.lng.toFixed(COORD_DECIMAL_PLACES)}`}</div>
         </div>
         <div class="peer-meta">
-          ${headingDeg != null ? `<div class="peer-heading">${headingDeg}°</div>` : ''}
+          ${headingDeg != null ? `<div class="peer-heading">${headingDeg}°</div>` : ""}
           <div class="peer-time">${timeAgo(loc.timestamp)}</div>
         </div>
       </div>`;
-  }).join('');
+    })
+    .join("");
 }
 
 function renderPeers() {
@@ -490,7 +250,8 @@ function renderPeers() {
   }
 
   if (all.length === 0) {
-    peerListEl.innerHTML = '<p class="empty-state">Waiting for peers to join...</p>';
+    peerListEl.innerHTML =
+      '<p class="empty-state">Waiting for peers to join...</p>';
     return;
   }
 
@@ -498,27 +259,69 @@ function renderPeers() {
   renderPeerCards(all);
 }
 
-function escapeHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
+/* ───── Module wrappers ───── */
+function broadcastMyLocation() {
+  _broadcastMyLocation(state);
+}
+
+function startGeo() {
+  _startGeo(state, { broadcastMyLocation, renderPeers, showToast });
+}
+
+function startCompass() {
+  _startCompass();
+}
+
+const peerDeps = () => ({
+  state,
+  showToast,
+  showScreen,
+  initMap,
+  startGeo,
+  startCompass,
+  renderPeers,
+  channelCodeEl,
+  channelScreen,
+  createBtn,
+  joinBtn,
+  nameInput,
+  codeInput,
+  generateCode,
+  peerIdFor,
+  CHANNEL_CODE_LENGTH,
+  leaveChannel,
+  stopOrientation,
+  cleanupMap,
+  welcomeScreen,
+});
+
+function createChannel() {
+  _createChannel(peerDeps());
+}
+
+function joinChannel() {
+  _joinChannel(peerDeps());
+}
+
+function leaveChannel() {
+  _leaveChannel(peerDeps());
 }
 
 /* ───── Event Listeners ───── */
-createBtn.addEventListener('click', createChannel);
-joinBtn.addEventListener('click', joinChannel);
-leaveBtn.addEventListener('click', leaveChannel);
+createBtn.addEventListener("click", createChannel);
+joinBtn.addEventListener("click", joinChannel);
+leaveBtn.addEventListener("click", leaveChannel);
 
-copyBtn.addEventListener('click', () => {
-  navigator.clipboard.writeText(state.code)
-    .then(() => showToast('Code copied'))
-    .catch(() => showToast('Copy failed', true));
+copyBtn.addEventListener("click", () => {
+  navigator.clipboard
+    .writeText(state.code)
+    .then(() => showToast("Code copied"))
+    .catch(() => showToast("Copy failed", true));
 });
 
-// Allow Enter to trigger actions
-nameInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') createBtn.click();
+nameInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") createBtn.click();
 });
-codeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') joinBtn.click();
+codeInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") joinBtn.click();
 });
