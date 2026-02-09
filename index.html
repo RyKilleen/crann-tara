@@ -14,28 +14,29 @@
     <h1>Where Are You?</h1>
     <p class="subtitle">Share your location in real-time</p>
 
-    <div class="form-group">
-      <label for="name-input">Your Name</label>
-      <input type="text" id="name-input" placeholder="Enter your name" maxlength="24" autocomplete="off">
+    <div class="name-display">
+      <span>You are: </span>
+      <strong id="name-display"></strong>
+      <button id="reroll-btn" class="btn-icon" title="New name">🎲</button>
     </div>
 
-    <button id="create-btn" class="btn btn-primary">Create Channel</button>
+    <button id="create-btn" class="btn btn-primary">Light a Beacon</button>
 
-    <div class="divider"><span>or join an existing channel</span></div>
+    <div class="divider"><span>or answer an existing beacon</span></div>
 
     <div class="form-group">
-      <label for="code-input">Channel Code</label>
+      <label for="code-input">Beacon Code</label>
       <input type="text" id="code-input" placeholder="e.g. AB3XY7" maxlength="6" autocomplete="off" spellcheck="false">
     </div>
 
-    <button id="join-btn" class="btn btn-secondary">Join Channel</button>
+    <button id="join-btn" class="btn btn-secondary">Answer the Call</button>
   </div>
 
-  <!-- Channel Screen -->
-  <div id="channel-screen" class="screen">
-    <div class="channel-header">
-      <div class="channel-code-wrapper">
-        <span class="channel-code" id="channel-code"></span>
+  <!-- Beacon Screen -->
+  <div id="beacon-screen" class="screen">
+    <div class="beacon-header">
+      <div class="beacon-code-wrapper">
+        <span class="beacon-code" id="beacon-code"></span>
         <button id="copy-btn" class="btn-icon" title="Copy code">📋</button>
       </div>
       <button id="leave-btn" class="btn btn-small btn-danger">Leave</button>
@@ -44,7 +45,7 @@
     <div id="map" class="map"></div>
 
     <div id="peer-list" class="peer-list">
-      <p class="empty-state">Waiting for peers to join...</p>
+      <p class="empty-state">Waiting for others to answer...</p>
     </div>
   </div>
 

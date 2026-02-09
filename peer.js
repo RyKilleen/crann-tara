@@ -38,11 +38,8 @@ export function broadcastMyLocation(state) {
 }
 
 export function createChannel(deps) {
-  const { state, showToast, showScreen, initMap, startGeo, startCompass, renderPeers, channelCodeEl, createBtn, joinBtn, channelScreen, generateCode, peerIdFor } = deps;
+  const { state, showToast, showScreen, initMap, startGeo, startCompass, renderPeers, beaconCodeEl, createBtn, joinBtn, beaconScreen, generateCode, peerIdFor } = deps;
 
-  const name = deps.nameInput.value.trim();
-  if (!name) { showToast('Please enter your name', true); return; }
-  state.name = name;
   state.code = generateCode();
   state.isCreator = true;
 
@@ -54,13 +51,13 @@ export function createChannel(deps) {
 
   state.peer.on('open', (id) => {
     console.log('[create] peer open with id:', id);
-    channelCodeEl.textContent = state.code;
-    showScreen(channelScreen);
+    beaconCodeEl.textContent = state.code;
+    showScreen(beaconScreen);
     initMap();
     startGeo();
     startCompass();
 
-    showToast('Channel created');
+    showToast('Beacon lit');
   });
 
   state.peer.on('connection', (conn) => {
@@ -104,13 +101,10 @@ export function createChannel(deps) {
 }
 
 export function joinChannel(deps) {
-  const { state, showToast, showScreen, initMap, startGeo, startCompass, renderPeers, channelCodeEl, createBtn, joinBtn, channelScreen, generateCode, peerIdFor, CHANNEL_CODE_LENGTH } = deps;
+  const { state, showToast, showScreen, initMap, startGeo, startCompass, renderPeers, beaconCodeEl, createBtn, joinBtn, beaconScreen, generateCode, peerIdFor, CHANNEL_CODE_LENGTH } = deps;
 
-  const name = deps.nameInput.value.trim();
   const code = deps.codeInput.value.trim().toUpperCase();
-  if (!name) { showToast('Please enter your name', true); return; }
   if (code.length !== CHANNEL_CODE_LENGTH) { showToast(`Enter a ${CHANNEL_CODE_LENGTH}-character code`, true); return; }
-  state.name = name;
   state.code = code;
   state.isCreator = false;
 
@@ -127,13 +121,13 @@ export function joinChannel(deps) {
     conn.on('open', () => {
       console.log('[join] connection open to:', conn.peer);
       state.connections.set(conn.peer, conn);
-      channelCodeEl.textContent = state.code;
-      showScreen(channelScreen);
+      beaconCodeEl.textContent = state.code;
+      showScreen(beaconScreen);
       initMap();
       startGeo();
       startCompass();
-  
-      showToast('Joined channel');
+
+      showToast('Answered the call');
       if (state.myLocation) {
         conn.send({ ...state.myLocation, type: 'location' });
       }
@@ -158,7 +152,7 @@ export function joinChannel(deps) {
   state.peer.on('error', (err) => {
     console.error('[join] peer error:', err.type, err);
     if (err.type === 'peer-unavailable') {
-      showToast('Channel not found', true);
+      showToast('Beacon not found', true);
     } else {
       showToast(`Peer error: ${err.type}`, true);
     }

@@ -21,6 +21,27 @@ const MARKER_SCALE_ZOOM_THRESHOLD = 17;
 const MARKER_SCALE_FACTOR = 1.5;
 const COORD_DECIMAL_PLACES = 5;
 
+/* ───── Whimsical Name Generator ───── */
+const ADJECTIVES = [
+  "Swift", "Brave", "Cosmic", "Daring", "Eager", "Fierce", "Gentle", "Happy",
+  "Icy", "Jolly", "Keen", "Lucky", "Mighty", "Noble", "Plucky", "Quick",
+  "Radiant", "Sneaky", "Trusty", "Upbeat", "Vivid", "Wandering", "Wild",
+  "Zany", "Bold", "Clever", "Dreamy", "Frosty", "Golden", "Hazy",
+];
+
+const NOUNS = [
+  "Otter", "Falcon", "Fox", "Badger", "Crane", "Dolphin", "Eagle", "Ferret",
+  "Gecko", "Heron", "Ibis", "Jackal", "Koala", "Lemur", "Moose", "Newt",
+  "Osprey", "Panda", "Quail", "Raven", "Shark", "Tiger", "Urchin", "Viper",
+  "Walrus", "Yak", "Zebra", "Lynx", "Owl", "Wolf",
+];
+
+function generateName() {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  return `${adj} ${noun}`;
+}
+
 /* ───── State ───── */
 const state = {
   name: "",
@@ -42,14 +63,15 @@ let knownPeerIds = new Set();
 /* ───── DOM refs ───── */
 const $ = (sel) => document.querySelector(sel);
 const welcomeScreen = $("#welcome-screen");
-const channelScreen = $("#channel-screen");
-const nameInput = $("#name-input");
+const beaconScreen = $("#beacon-screen");
+const nameDisplay = $("#name-display");
+const rerollBtn = $("#reroll-btn");
 const codeInput = $("#code-input");
 const createBtn = $("#create-btn");
 const joinBtn = $("#join-btn");
 const copyBtn = $("#copy-btn");
 const leaveBtn = $("#leave-btn");
-const channelCodeEl = $("#channel-code");
+const beaconCodeEl = $("#beacon-code");
 const peerListEl = $("#peer-list");
 const toastEl = $("#toast");
 
@@ -86,7 +108,7 @@ function timeAgo(ts) {
 
 function showScreen(screen) {
   welcomeScreen.classList.remove("active");
-  channelScreen.classList.remove("active");
+  beaconScreen.classList.remove("active");
   screen.classList.add("active");
 }
 
@@ -251,7 +273,7 @@ function renderPeers() {
 
   if (all.length === 0) {
     peerListEl.innerHTML =
-      '<p class="empty-state">Waiting for peers to join...</p>';
+      '<p class="empty-state">Waiting for others to answer...</p>';
     return;
   }
 
@@ -280,11 +302,10 @@ const peerDeps = () => ({
   startGeo,
   startCompass,
   renderPeers,
-  channelCodeEl,
-  channelScreen,
+  beaconCodeEl,
+  beaconScreen,
   createBtn,
   joinBtn,
-  nameInput,
   codeInput,
   generateCode,
   peerIdFor,
@@ -307,21 +328,27 @@ function leaveChannel() {
   _leaveChannel(peerDeps());
 }
 
+/* ───── Auto-generate name on load ───── */
+state.name = generateName();
+nameDisplay.textContent = state.name;
+
 /* ───── Event Listeners ───── */
 createBtn.addEventListener("click", createChannel);
 joinBtn.addEventListener("click", joinChannel);
 leaveBtn.addEventListener("click", leaveChannel);
 
+rerollBtn.addEventListener("click", () => {
+  state.name = generateName();
+  nameDisplay.textContent = state.name;
+});
+
 copyBtn.addEventListener("click", () => {
   navigator.clipboard
     .writeText(state.code)
-    .then(() => showToast("Code copied"))
+    .then(() => showToast("Beacon code copied"))
     .catch(() => showToast("Copy failed", true));
 });
 
-nameInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") createBtn.click();
-});
 codeInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") joinBtn.click();
 });

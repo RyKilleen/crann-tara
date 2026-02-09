@@ -172,8 +172,41 @@ input[type="text"]:focus {
   padding: 0 0.75rem;
 }
 
-/* Channel screen */
-.channel-header {
+/* Name display */
+.name-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 1rem;
+  margin-bottom: 1.5rem;
+  font-size: 1rem;
+}
+
+.name-display span {
+  color: var(--text-muted);
+}
+
+.name-display strong {
+  color: var(--accent);
+}
+
+.name-display .btn-icon {
+  font-size: 1rem;
+  padding: 0.2rem;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+
+.name-display .btn-icon:hover {
+  opacity: 1;
+}
+
+/* Beacon screen */
+.beacon-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -182,13 +215,13 @@ input[type="text"]:focus {
   border-bottom: 1px solid var(--border);
 }
 
-.channel-code-wrapper {
+.beacon-code-wrapper {
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.channel-code {
+.beacon-code {
   font-family: "SF Mono", "Fira Code", monospace;
   font-size: 1.6rem;
   font-weight: 700;
