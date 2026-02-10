@@ -9,7 +9,10 @@
   "devDependencies": {
     "@types/leaflet": "^1.9.21",
     "esbuild": "^0.27.3",
-    "peerjs": "^1.5.5",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "peerjs": "^1.5.5"
   }
 }

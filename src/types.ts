@@ -1,3 +1,5 @@
+import type { Peer, DataConnection } from "peerjs";
+
 export interface LocationData {
   peerId: string;
   name: string;
@@ -5,8 +7,9 @@ export interface LocationData {
   lng: number;
   heading: number | null;
   timestamp: number;
-  isSelf?: boolean;
 }
+
+export type PeerView = LocationData & { isSelf: boolean };
 
 export type PeerMessage =
   | ({ type: "location" } & LocationData)
@@ -26,32 +29,4 @@ export interface AppState {
   myLocation: LocationData | null;
   visibilityHandler: (() => void) | null;
   beforeUnloadHandler: (() => void) | null;
-}
-
-export interface GeoCallbacks {
-  broadcastMyLocation: () => void;
-  renderPeers: () => void;
-  showToast: (msg: string, isError?: boolean) => void;
-}
-
-export interface PeerDeps {
-  state: AppState;
-  showToast: (msg: string, isError?: boolean) => void;
-  showScreen: (screen: HTMLElement) => void;
-  initMap: () => void;
-  startGeo: () => void;
-  startCompass: () => void;
-  renderPeers: () => void;
-  beaconCodeEl: HTMLElement;
-  beaconScreen: HTMLElement;
-  createBtn: HTMLButtonElement;
-  joinBtn: HTMLButtonElement;
-  codeInput: HTMLInputElement;
-  generateCode: (len?: number) => string;
-  peerIdFor: (code: string) => string;
-  CHANNEL_CODE_LENGTH: number;
-  leaveChannel: () => void;
-  stopOrientation: () => void;
-  cleanupMap: () => void;
-  welcomeScreen: HTMLElement;
 }

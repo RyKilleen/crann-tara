@@ -1,15 +1,15 @@
-import type { AppState, GeoCallbacks } from "./types";
+import { state } from "./state";
+import { broadcastMyLocation } from "./state";
+import { showToast } from "./ui";
+import { renderPeers } from "./map";
 
 const GEO_MAX_AGE_MS = 2000;
 const ORIENTATION_THROTTLE_MS = 500;
-const HEADING_SMOOTHING = 0.25; // EMA weight for new readings (lower = smoother)
+const HEADING_SMOOTHING = 0.25;
 
 let currentHeading: number | null = null;
 let orientationListening = false;
 let lastOrientationBroadcast = 0;
-
-let _state: AppState | null = null;
-let _callbacks: GeoCallbacks | null = null;
 
 function smoothHeading(raw: number): number {
   if (currentHeading == null) return raw;
@@ -20,11 +20,11 @@ function smoothHeading(raw: number): number {
 }
 
 function onLocationChange(): void {
-  if (!_state?.myLocation) return;
-  _state.myLocation.heading = currentHeading;
-  _state.myLocation.timestamp = Date.now();
-  _callbacks!.broadcastMyLocation();
-  _callbacks!.renderPeers();
+  if (!state.myLocation) return;
+  state.myLocation.heading = currentHeading;
+  state.myLocation.timestamp = Date.now();
+  broadcastMyLocation();
+  renderPeers();
 }
 
 function onOrientation(e: DeviceOrientationEvent): void {
@@ -50,10 +50,7 @@ function listenOrientation(): void {
   orientationListening = true;
 }
 
-export function startGeo(state: AppState, callbacks: GeoCallbacks): void {
-  _state = state;
-  _callbacks = callbacks;
-
+export function startGeo(): void {
   if (!state.myLocation) {
     state.myLocation = {
       peerId: state.peer?.id ?? "",
@@ -63,11 +60,11 @@ export function startGeo(state: AppState, callbacks: GeoCallbacks): void {
       heading: currentHeading,
       timestamp: Date.now(),
     };
-    callbacks.renderPeers();
+    renderPeers();
   }
 
   if (!navigator.geolocation) {
-    callbacks.showToast("Geolocation not supported — using placeholder", true);
+    showToast("Geolocation not supported — using placeholder", true);
     return;
   }
   state.geoWatchId = navigator.geolocation.watchPosition(
@@ -80,7 +77,7 @@ export function startGeo(state: AppState, callbacks: GeoCallbacks): void {
     },
     (err) => {
       console.warn("[geo] error:", err.code, err.message);
-      callbacks.broadcastMyLocation();
+      broadcastMyLocation();
     },
     { enableHighAccuracy: true, maximumAge: GEO_MAX_AGE_MS },
   );
@@ -104,8 +101,4 @@ export function stopOrientation(): void {
   window.removeEventListener("deviceorientation", onOrientation, true);
   orientationListening = false;
   currentHeading = null;
-}
-
-export function getCurrentHeading(): number | null {
-  return currentHeading;
 }

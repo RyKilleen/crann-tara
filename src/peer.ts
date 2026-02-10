@@ -1,44 +1,47 @@
-import type { AppState, PeerDeps, PeerMessage } from "./types";
+import { Peer, type DataConnection } from "peerjs";
+import type { PeerMessage } from "./types";
+import { state, broadcast } from "./state";
+import { showToast, showScreen, beaconCodeEl, beaconScreen, createBtn, joinBtn, codeInput, welcomeScreen } from "./ui";
+import { generateCode, peerIdFor, CHANNEL_CODE_LENGTH, isValidCode } from "./util";
+import { startGeo, startCompass, stopOrientation } from "./geo";
+import { initMap, cleanupMap, renderPeers } from "./map";
 
 const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
 const PEER_OPTS: { host?: string; port?: number; path?: string } = IS_LOCAL
   ? { host: "localhost", port: 9000, path: "/myapp" }
-  : {}; // uses default PeerJS cloud server
+  : {};
 
-function handleData(state: AppState, data: PeerMessage, fromConn: DataConnection, deps: PeerDeps): void {
+function handleData(data: PeerMessage, fromConn: DataConnection): void {
   console.log("[data] received from", fromConn.peer, ":", typeof data, data);
   if (data.type === "location") {
     state.locations.set(data.peerId, data);
-    deps.renderPeers();
+    renderPeers();
   } else if (data.type === "peers") {
     for (const loc of data.locations) {
       state.locations.set(loc.peerId, loc);
     }
-    deps.renderPeers();
-    // Connect to each peer we're not already connected to
+    renderPeers();
     if (data.peerIds) {
       for (const pid of data.peerIds) {
         if (pid !== state.peer!.id && !state.connections.has(pid)) {
           console.log("[mesh] connecting to peer:", pid);
           const conn = state.peer!.connect(pid, { reliable: true });
-          setupConnection(conn, state, deps);
+          setupConnection(conn);
         }
       }
     }
   } else if (data.type === "peer-left") {
     state.locations.delete(data.peerId);
-    deps.renderPeers();
+    renderPeers();
   } else if (data.type === "new-greeter") {
-    // Greeter is leaving gracefully, trigger promotion
     console.log("[mesh] received new-greeter signal");
   }
 }
 
-function setupConnection(conn: DataConnection, state: AppState, deps: PeerDeps): void {
+function setupConnection(conn: DataConnection): void {
   conn.on("open", () => {
     console.log("[mesh] connection open with:", conn.peer);
     state.connections.set(conn.peer, conn);
-    // If we're the greeter, send the peer list to the new joiner
     if (state.isCreator) {
       conn.send({
         type: "peers",
@@ -51,7 +54,7 @@ function setupConnection(conn: DataConnection, state: AppState, deps: PeerDeps):
     }
   });
 
-  conn.on("data", (data) => handleData(state, data as PeerMessage, conn, deps));
+  conn.on("data", (data) => handleData(data as PeerMessage, conn));
 
   conn.on("error", (err) => {
     console.error("[mesh] connection error with", conn.peer, ":", err);
@@ -62,19 +65,18 @@ function setupConnection(conn: DataConnection, state: AppState, deps: PeerDeps):
     const disconnectedPeerId = conn.peer;
     state.connections.delete(disconnectedPeerId);
     state.locations.delete(disconnectedPeerId);
-    deps.renderPeers();
-    maybePromoteToGreeter(disconnectedPeerId, state, deps);
+    renderPeers();
+    maybePromoteToGreeter(disconnectedPeerId);
   });
 }
 
-function maybePromoteToGreeter(disconnectedPeerId: string, state: AppState, deps: PeerDeps, retries = 0): void {
-  const greeterId = deps.peerIdFor(state.code);
+function maybePromoteToGreeter(disconnectedPeerId: string, retries = 0): void {
+  const greeterId = peerIdFor(state.code);
   if (disconnectedPeerId !== greeterId) return;
-  if (state.isCreator) return; // already the greeter
+  if (state.isCreator) return;
 
   console.log("[mesh] greeter disconnected, checking promotion");
 
-  // Collect remaining peer IDs (our own + all connected)
   const candidates = [state.peer!.id, ...state.connections.keys()].sort();
   console.log("[mesh] promotion candidates:", candidates, "my id:", state.peer!.id);
 
@@ -86,7 +88,6 @@ function maybePromoteToGreeter(disconnectedPeerId: string, state: AppState, deps
   console.log("[mesh] promoting self to greeter");
   state.isCreator = true;
 
-  // Create a second Peer object for discovery
   state.greeterPeer = new Peer(greeterId, PEER_OPTS);
 
   state.greeterPeer.on("open", () => {
@@ -100,7 +101,7 @@ function maybePromoteToGreeter(disconnectedPeerId: string, state: AppState, deps
 
   state.greeterPeer.on("connection", (conn) => {
     console.log("[mesh] greeter: incoming connection from:", conn.peer);
-    setupConnection(conn, state, deps);
+    setupConnection(conn);
   });
 
   state.greeterPeer.on("error", (err) => {
@@ -109,12 +110,12 @@ function maybePromoteToGreeter(disconnectedPeerId: string, state: AppState, deps
       console.log("[mesh] greeter ID still held, retrying in 2s (attempt", retries + 1, ")");
       state.greeterPeer!.destroy();
       state.greeterPeer = null;
-      setTimeout(() => maybePromoteToGreeter(disconnectedPeerId, state, deps, retries + 1), 2000);
+      setTimeout(() => maybePromoteToGreeter(disconnectedPeerId, retries + 1), 2000);
     }
   });
 }
 
-function setupVisibilityReconnect(state: AppState): void {
+function setupVisibilityReconnect(): void {
   const handler = () => {
     if (document.visibilityState !== "visible") return;
     if (state.peer?.disconnected) {
@@ -130,10 +131,10 @@ function setupVisibilityReconnect(state: AppState): void {
   document.addEventListener("visibilitychange", handler);
 }
 
-function setupBeforeUnload(state: AppState): void {
+function setupBeforeUnload(): void {
   const handler = () => {
     if (state.isCreator && state.connections.size > 0) {
-      broadcast(state, { type: "new-greeter" });
+      broadcast({ type: "new-greeter" });
     }
     if (state.greeterPeer) state.greeterPeer.destroy();
     if (state.peer) state.peer.destroy();
@@ -142,122 +143,98 @@ function setupBeforeUnload(state: AppState): void {
   window.addEventListener("beforeunload", handler);
 }
 
-export function broadcast(state: AppState, msg: PeerMessage): void {
-  for (const conn of state.connections.values()) {
-    conn.send(msg);
-  }
+function enterBeacon(): void {
+  beaconCodeEl.textContent = state.code;
+  showScreen(beaconScreen);
+  initMap();
+  startGeo();
+  startCompass();
 }
 
-export function broadcastMyLocation(state: AppState): void {
-  if (!state.myLocation) return;
-  broadcast(state, { ...state.myLocation, type: "location" });
+function initPeer(peerId: string, onError?: (err: { type: string }) => boolean): Peer {
+  const peer = new Peer(peerId, PEER_OPTS);
+
+  peer.on("connection", (conn) => {
+    console.log("[mesh] incoming connection from:", conn.peer);
+    setupConnection(conn);
+  });
+
+  peer.on("disconnected", () => {
+    console.warn("[peer] disconnected from signaling, reconnecting…");
+    peer.reconnect();
+  });
+
+  peer.on("error", (err) => {
+    console.error("[peer] error:", err.type, err);
+    const handled = onError?.(err) ?? false;
+    if (!handled) {
+      showToast(`Peer error: ${err.type}`, true);
+    }
+    createBtn.disabled = joinBtn.disabled = false;
+  });
+
+  setupBeforeUnload();
+  setupVisibilityReconnect();
+
+  return peer;
 }
 
-export function createChannel(deps: PeerDeps): void {
-  const { state, showToast, showScreen, initMap, startGeo, startCompass, beaconCodeEl, createBtn, joinBtn, beaconScreen, generateCode, peerIdFor } = deps;
-
+export function createChannel(): void {
   state.code = generateCode();
   state.isCreator = true;
-
   createBtn.disabled = joinBtn.disabled = true;
 
   const peerId = peerIdFor(state.code);
   console.log("[create] registering peer:", peerId, "opts:", PEER_OPTS);
-  state.peer = new Peer(peerId, PEER_OPTS);
+  state.peer = initPeer(peerId);
 
   state.peer.on("open", (id) => {
     console.log("[create] peer open with id:", id);
-    beaconCodeEl.textContent = state.code;
-    showScreen(beaconScreen);
-    initMap();
-    startGeo();
-    startCompass();
-
+    enterBeacon();
     showToast("Beacon lit");
   });
-
-  state.peer.on("connection", (conn) => {
-    console.log("[create] incoming connection from:", conn.peer);
-    setupConnection(conn, state, deps);
-  });
-
-  state.peer.on("disconnected", () => {
-    console.warn("[create] disconnected from signaling, reconnecting…");
-    state.peer!.reconnect();
-  });
-
-  state.peer.on("error", (err) => {
-    console.error("[create] peer error:", err.type, err);
-    showToast(`Peer error: ${err.type}`, true);
-    createBtn.disabled = joinBtn.disabled = false;
-  });
-
-  setupBeforeUnload(state);
-  setupVisibilityReconnect(state);
 }
 
-export function joinChannel(deps: PeerDeps): void {
-  const { state, showToast, showScreen, initMap, startGeo, startCompass, beaconCodeEl, createBtn, joinBtn, beaconScreen, generateCode, peerIdFor, CHANNEL_CODE_LENGTH } = deps;
-
-  const code = deps.codeInput.value.trim().toUpperCase();
-  if (code.length !== CHANNEL_CODE_LENGTH) { showToast(`Enter a ${CHANNEL_CODE_LENGTH}-character code`, true); return; }
+export function joinChannel(): void {
+  const code = codeInput.value.trim().toUpperCase();
+  if (code.length !== CHANNEL_CODE_LENGTH) {
+    showToast(`Enter a ${CHANNEL_CODE_LENGTH}-character code`, true);
+    return;
+  }
+  if (!isValidCode(code)) {
+    showToast("Invalid beacon code", true);
+    return;
+  }
   state.code = code;
   state.isCreator = false;
-
   createBtn.disabled = joinBtn.disabled = true;
 
   const joinerId = "way-j-" + generateCode();
-  state.peer = new Peer(joinerId, PEER_OPTS);
+  state.peer = initPeer(joinerId, (err) => {
+    if (err.type === "peer-unavailable") {
+      showToast("Beacon not found", true);
+      return true;
+    }
+    return false;
+  });
 
   state.peer.on("open", (id) => {
     console.log("[join] peer open with id:", id);
     console.log("[join] connecting to:", peerIdFor(code));
     const conn = state.peer!.connect(peerIdFor(code), { reliable: true });
-    setupConnection(conn, state, deps);
+    setupConnection(conn);
 
     conn.on("open", () => {
-      beaconCodeEl.textContent = state.code;
-      showScreen(beaconScreen);
-      initMap();
-      startGeo();
-      startCompass();
-
+      enterBeacon();
       showToast("Answered the call");
       if (state.myLocation) {
         conn.send({ ...state.myLocation, type: "location" });
       }
     });
   });
-
-  // Accept incoming connections from other mesh peers
-  state.peer.on("connection", (conn) => {
-    console.log("[join] incoming connection from:", conn.peer);
-    setupConnection(conn, state, deps);
-  });
-
-  state.peer.on("disconnected", () => {
-    console.warn("[join] disconnected from signaling, reconnecting…");
-    state.peer!.reconnect();
-  });
-
-  state.peer.on("error", (err) => {
-    console.error("[join] peer error:", err.type, err);
-    if (err.type === "peer-unavailable") {
-      showToast("Beacon not found", true);
-    } else {
-      showToast(`Peer error: ${err.type}`, true);
-    }
-    createBtn.disabled = joinBtn.disabled = false;
-  });
-
-  setupBeforeUnload(state);
-  setupVisibilityReconnect(state);
 }
 
-export function leaveChannel(deps: PeerDeps): void {
-  const { state, stopOrientation, cleanupMap, createBtn, joinBtn, showScreen, welcomeScreen } = deps;
-
-  // Remove event listeners since we're cleaning up gracefully
+export function leaveChannel(): void {
   if (state.visibilityHandler) {
     document.removeEventListener("visibilitychange", state.visibilityHandler);
     state.visibilityHandler = null;
@@ -267,9 +244,8 @@ export function leaveChannel(deps: PeerDeps): void {
     state.beforeUnloadHandler = null;
   }
 
-  // If we're the greeter and have connections, signal handoff
   if (state.isCreator && state.connections.size > 0) {
-    broadcast(state, { type: "new-greeter" });
+    broadcast({ type: "new-greeter" });
   }
 
   if (state.geoWatchId != null) {
